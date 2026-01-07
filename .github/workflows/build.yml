@@ -1,0 +1,40 @@
+name: Build Backend x86_64 Linux
+
+on:
+  push:
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-backend:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Cache cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          path: backend/target
+          key: ${{ runner.os }}-cargo-backend-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-backend-
+
+      - name: Build backend release
+        working-directory: backend
+        run: cargo build --release
+
+      - name: Upload backend binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: compass-backend-linux-x86_64
+          path: backend/target/release/compass
