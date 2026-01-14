@@ -362,9 +362,11 @@ class CompassClient:
 
                 elif msg_type == "request_failed":
                     # A request we made was declined/timed out
-                    # We need to fail any pending requests, but we don't know which one
-                    # The server should have sent this in response to our connect
-                    await self._pending_responses.put(msg)
+                    # Fail all pending peer request futures
+                    for future in self._pending_peer_requests.values():
+                        if not future.done():
+                            future.set_exception(PeerUnavailableError())
+                    self._pending_peer_requests.clear()
 
                 elif msg_type == "error":
                     # Error message - put in queue for handlers
@@ -665,26 +667,9 @@ class CompassClient:
                 if ack.get("type") != "request_sent":
                     raise ProtocolError(f"Expected request_sent, got {ack.get('type')}")
 
-                # Now wait for the peer response (accept/decline/timeout)
-                # The listen loop will put either a peer message or request_failed
-                while True:
-                    msg = await asyncio.wait_for(
-                        self._pending_responses.get(), timeout=timeout
-                    )
-                    if msg.get("type") == "peer":
-                        peer = PeerInfo.from_dict(msg)
-                        if peer.uuid == target_uuid:
-                            return peer
-                        # Not for us, put it back (unlikely but handle it)
-                        await self._pending_responses.put(msg)
-                    elif msg.get("type") == "request_failed":
-                        raise PeerUnavailableError()
-                    elif msg.get("type") == "error":
-                        reason = msg.get("reason", "unknown")
-                        if reason == "peer_unavailable":
-                            raise PeerUnavailableError()
-                        raise ProtocolError(reason)
-                    # Other message types - ignore and keep waiting
+                # Now wait for the peer response via the future
+                # The listen loop will resolve this future when a peer message arrives
+                return await asyncio.wait_for(future, timeout=timeout)
 
             except asyncio.TimeoutError:
                 raise PeerUnavailableError()
@@ -884,7 +869,8 @@ class CompassClient:
 
         if self._writer is not None:
             try:
-                await self._writer.aclose()
+                self._writer.close()
+                await self._writer.wait_closed()
             except Exception:
                 pass
             self._writer = None
