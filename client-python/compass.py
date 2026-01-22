@@ -380,6 +380,15 @@ class CompassClient:
             pass  # Connection closed
         except asyncio.CancelledError:
             pass
+        finally:
+            # Clean up state so other methods know we're not listening anymore
+            self._listen_task = None
+            self._request_handler = None
+            # Fail any pending peer requests
+            for future in self._pending_peer_requests.values():
+                if not future.done():
+                    future.set_exception(ConnectionError("Listen loop terminated"))
+            self._pending_peer_requests.clear()
 
     async def _safe_call_handler(self, request: ConnectionRequest) -> None:
         """Safely call the request handler, catching any exceptions."""
@@ -651,7 +660,7 @@ class CompassClient:
         await self._send_message(message)
 
         # If we're in listen mode, set up a future and wait for the response
-        if self._listen_task is not None:
+        if self._listen_task is not None and not self._listen_task.done():
             loop = asyncio.get_event_loop()
             future: asyncio.Future[PeerInfo] = loop.create_future()
             self._pending_peer_requests[target_uuid] = future
@@ -728,7 +737,7 @@ class CompassClient:
         )
 
         # Wait for accept_ack
-        if self._listen_task is not None:
+        if self._listen_task is not None and not self._listen_task.done():
             response = await self._pending_responses.get()
         else:
             response = await self._recv_message_raw()
@@ -739,7 +748,7 @@ class CompassClient:
             raise ProtocolError(f"Expected accept_ack, got {response.get('type')}")
 
         # Now wait for the peer info (sent via notification channel)
-        if self._listen_task is not None:
+        if self._listen_task is not None and not self._listen_task.done():
             response = await self._pending_responses.get()
         else:
             response = await self._recv_message_raw()
@@ -769,7 +778,7 @@ class CompassClient:
         )
 
         # Wait for decline_ack
-        if self._listen_task is not None:
+        if self._listen_task is not None and not self._listen_task.done():
             response = await self._pending_responses.get()
         else:
             response = await self._recv_message_raw()
@@ -830,6 +839,13 @@ class CompassClient:
         """
         if not self.is_connected:
             raise ConnectionError("Not connected to server")
+
+        # Clear any stale data from previous listen sessions
+        while not self._pending_responses.empty():
+            try:
+                self._pending_responses.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
         self._request_handler = handler
         self._listen_task = asyncio.create_task(self._listen_loop())
