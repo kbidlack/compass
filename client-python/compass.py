@@ -362,11 +362,19 @@ class CompassClient:
 
                 elif msg_type == "request_failed":
                     # A request we made was declined/timed out
-                    # Fail all pending peer request futures
-                    for future in self._pending_peer_requests.values():
+                    # Only fail the specific request, not all of them
+                    failed_uuid = msg.get("target_uuid") or msg.get("uuid")
+                    if failed_uuid and failed_uuid in self._pending_peer_requests:
+                        future = self._pending_peer_requests.pop(failed_uuid)
                         if not future.done():
                             future.set_exception(PeerUnavailableError())
-                    self._pending_peer_requests.clear()
+                    elif not failed_uuid:
+                        # Server didn't specify which request failed - legacy behavior
+                        # Only fail all if we have exactly one pending request
+                        if len(self._pending_peer_requests) == 1:
+                            uuid, future = self._pending_peer_requests.popitem()
+                            if not future.done():
+                                future.set_exception(PeerUnavailableError())
 
                 elif msg_type == "error":
                     # Error message - put in queue for handlers
@@ -504,7 +512,8 @@ class CompassClient:
         self,
         mc_uuid: str,
         mc_username: str,
-        mc_access_token: str,
+        mc_access_token: str = "",
+        skip_auth: bool = False,
     ) -> None:
         """
         Register a Minecraft identity with the rendezvous server.
@@ -519,6 +528,9 @@ class CompassClient:
             mc_uuid: Your Minecraft UUID.
             mc_username: Your Minecraft username.
             mc_access_token: Your Minecraft access token (from launcher).
+                Not required if skip_auth is True.
+            skip_auth: If True, skip the Mojang session join step.
+                Only use this when the server is running with --skip-auth.
 
         Raises:
             ConnectionError: If not connected.
@@ -547,8 +559,9 @@ class CompassClient:
         if not server_id:
             raise ProtocolError("No server_id in challenge")
 
-        # Step 3: Call Mojang to prove ownership
-        await self._mojang_session_join(mc_access_token, mc_uuid, server_id)
+        # Step 3: Call Mojang to prove ownership (skip if testing)
+        if not skip_auth:
+            await self._mojang_session_join(mc_access_token, mc_uuid, server_id)
 
         # Step 4: Confirm verification
         await self._send_message(
@@ -881,13 +894,22 @@ class CompassClient:
 
     async def disconnect(self) -> None:
         """Disconnect from the server and clean up resources."""
-        self.stop_listening()
+        # Stop listening first and wait for the task to finish
+        if self._listen_task is not None:
+            self._listen_task.cancel()
+            try:
+                await self._listen_task
+            except asyncio.CancelledError:
+                pass
+            self._listen_task = None
+        self._request_handler = None
 
         if self._writer is not None:
             try:
                 self._writer.close()
-                await self._writer.wait_closed()
-            except Exception:
+                # Use wait_for to avoid hanging indefinitely
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=2.0)
+            except (Exception, asyncio.TimeoutError):
                 pass
             self._writer = None
 

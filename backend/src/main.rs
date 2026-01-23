@@ -34,6 +34,11 @@ struct Args {
     /// Interval in seconds for cleaning up expired sessions.
     #[arg(long, default_value = "60")]
     cleanup_interval: u64,
+
+    /// Skip Mojang authentication verification (for testing only).
+    /// WARNING: Do not use in production!
+    #[arg(long)]
+    skip_auth: bool,
 }
 
 /// Load or generate the server's secret key.
@@ -130,7 +135,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create the protocol handler
-    let handler = RendezvousHandler::new(state);
+    let handler = if args.skip_auth {
+        warn!("WARNING: Running with --skip-auth. Mojang authentication is DISABLED!");
+        warn!("WARNING: Do not use this in production!");
+        RendezvousHandler::new_skip_auth(state)
+    } else {
+        RendezvousHandler::new(state)
+    };
 
     // Build and spawn the router
     let router = Router::builder(endpoint.clone())

@@ -83,7 +83,11 @@ pub enum ServerMessage {
         node_id: String,
     },
     /// Connection request was declined or failed (generic for privacy).
-    RequestFailed,
+    /// Includes the target UUID so clients can match this to pending requests.
+    RequestFailed {
+        /// The UUID of the peer that was requested (the target of our connect).
+        target_uuid: String,
+    },
     /// Heartbeat response.
     Pong,
     /// Error response.

@@ -36,6 +36,8 @@ fn generate_conn_nonce() -> String {
 pub struct RendezvousHandler {
     state: Arc<State>,
     mojang: MojangClient,
+    /// Skip Mojang authentication verification (for testing only).
+    skip_auth: bool,
 }
 
 impl RendezvousHandler {
@@ -44,6 +46,17 @@ impl RendezvousHandler {
         Self {
             state,
             mojang: MojangClient::new(),
+            skip_auth: false,
+        }
+    }
+
+    /// Create a new rendezvous handler with authentication skipping enabled.
+    /// WARNING: Only use this for testing!
+    pub fn new_skip_auth(state: Arc<State>) -> Self {
+        Self {
+            state,
+            mojang: MojangClient::new(),
+            skip_auth: true,
         }
     }
 
@@ -268,15 +281,23 @@ impl RendezvousHandler {
             }
         };
 
-        // Verify with Mojang
-        let verified = self
-            .mojang
-            .verify_player(
-                &challenge.mc_username,
-                &challenge.mc_uuid,
-                &challenge.server_id,
-            )
-            .await;
+        // Verify with Mojang (or skip if testing)
+        let verified = if self.skip_auth {
+            warn!(
+                ?node_id,
+                "Skipping Mojang verification (--skip-auth enabled)"
+            );
+            Ok(())
+        } else {
+            self.mojang
+                .verify_player(
+                    &challenge.mc_username,
+                    &challenge.mc_uuid,
+                    &challenge.server_id,
+                )
+                .await
+                .map(|_| ())
+        };
 
         match verified {
             Ok(_) => {
@@ -478,7 +499,9 @@ impl RendezvousHandler {
             }
             Ok(ConnectionResult::Declined) | Err(_) => {
                 // Declined or channel closed (timeout) - send generic failure
-                let response = ServerMessage::RequestFailed;
+                let response = ServerMessage::RequestFailed {
+                    target_uuid: to_uuid,
+                };
                 self.send_message(writer, &response).await?;
             }
         }
